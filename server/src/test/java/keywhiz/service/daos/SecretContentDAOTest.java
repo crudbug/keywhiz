@@ -18,7 +18,6 @@ package keywhiz.service.daos;
 
 import com.google.common.collect.ImmutableMap;
 import java.time.OffsetDateTime;
-import java.util.List;
 import javax.inject.Inject;
 import keywhiz.KeywhizTestRunner;
 import keywhiz.api.ApiDate;
@@ -30,7 +29,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import static java.util.stream.Collectors.toList;
 import static keywhiz.jooq.tables.Secrets.SECRETS;
 import static keywhiz.jooq.tables.SecretsContent.SECRETS_CONTENT;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,8 +51,7 @@ public class SecretContentDAOTest {
     secretContentDAO = secretContentDAOFactory.readwrite();
     long now = OffsetDateTime.now().toEpochSecond();
 
-    jooqContext.insertInto(SECRETS, SECRETS.ID, SECRETS.NAME, SECRETS.CREATEDAT,
-        SECRETS.UPDATEDAT)
+    jooqContext.insertInto(SECRETS, SECRETS.ID, SECRETS.NAME, SECRETS.CREATEDAT, SECRETS.UPDATEDAT)
         .values(secretContent1.secretSeriesId(), "secretName", now, now)
         .execute();
 
@@ -76,6 +73,37 @@ public class SecretContentDAOTest {
     secretContentDAO.createSecretContent(secretContent1.secretSeriesId()+1, "encrypted", "creator",
         metadata, 1136214245);
     assertThat(tableSize()).isEqualTo(before + 1);
+  }
+
+  @Test public void pruneOldContents() throws Exception {
+    int before = tableSize();
+
+    long id0 = secretContentDAO.createSecretContent(
+        secretContent1.secretSeriesId(), "encrypted0", "creator", metadata, 1136214245);
+    long id1 = secretContentDAO.createSecretContent(
+        secretContent1.secretSeriesId(), "encrypted1", "creator", metadata, 1136214245);
+    long id2 = secretContentDAO.createSecretContent(
+        secretContent1.secretSeriesId(), "encrypted2", "creator", metadata, 1136214245);
+
+    assertThat(tableSize()).isEqualTo(before + 3);
+
+    // Update created_at to always be in the past
+    jooqContext.update(SECRETS_CONTENT)
+        .set(SECRETS_CONTENT.CREATEDAT, 0L)
+        .execute();
+
+    // Make id1 be the current version for the secret series and prune
+    jooqContext.update(SECRETS)
+        .set(SECRETS.CURRENT, id1)
+        .where(SECRETS.ID.eq(secretContent1.secretSeriesId()))
+        .execute();
+
+    secretContentDAO.pruneOldContents(secretContent1.secretSeriesId());
+
+    // Should have deleted id0/id2, with id1 still intact
+    assertThat(secretContentDAO.getSecretContentById(id0).isPresent()).isFalse();
+    assertThat(secretContentDAO.getSecretContentById(id2).isPresent()).isFalse();
+    secretContentDAO.getSecretContentById(id1).get().encryptedContent().equals("encrypted1");
   }
 
   @Test public void getSecretContentById() {
